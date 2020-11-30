@@ -759,9 +759,10 @@ def fingerprint_function(fn_start, fn_end):
         position = (trace_block_count, instruction_hash)
         trace_instruction_count += 1
         block_instruction_count += 1
-        block_next = ida.is_flow(ida.get_flags(next_ea))
+        block_next = ida.is_flow(ida.get_flags(next_ea)) #前一条指令是否存在并将执行流传递给当前字节
 
         # collect comments
+        # 这有一个问题，如何保存cmt的正常注释位置呢
         comment = ida.get_cmt(ea, False)
         if comment is not None:
             cmts = comments.setdefault(position, [])
@@ -777,7 +778,7 @@ def fingerprint_function(fn_start, fn_end):
             if ref_tuple is None:
                 # skip reference
                 block_refs.append('s')
-            elif fn_start <= ref_tuple[1] < fn_end:
+            elif fn_start <= ref_tuple[1] < fn_end: #如果是在当前函数内的话
                 # internal reference
                 rtype, ref = ref_tuple
                 block_refs.append('i')
@@ -816,17 +817,17 @@ def fingerprint_functions(segments):
 
     instruction = ida.insn_t()
     tinfo = ida.tinfo_t()
-    count = ida.get_func_qty()
+    count = ida.get_func_qty() # 获取函数总数
     functions = []
     progress = ProgressBar('  functions  ')
     for n in range(count):
         progress.update(n / count)
 
         # gather info
-        function = ida.getn_func(n)
+        function = ida.getn_func(n) #Get pointer to function structure by number.
         fn_start = function.start_ea
         fn_end = function.end_ea
-        fn_flags = ida.get_flags(fn_start)
+        fn_flags = ida.get_flags(fn_start) # 获取地址的属性，后面要以用isCode、isData来判断属性
         fn_name = ida.get_name(fn_start)
         if ida.get_tinfo(tinfo, fn_start):
             fn_type = tinfo._print(None, ida.PRTYPE_1LINE | ida.PRTYPE_SEMI)
@@ -834,18 +835,23 @@ def fingerprint_functions(segments):
             fn_type = None
         fn_flags = function.flags
 
-        ida.show_auto(fn_start, ida.AU_USED)
+        ida.show_auto(fn_start, ida.AU_USED) 
 
-        if is_address_fingerprintable(fn_start, segments):
+        if is_address_fingerprintable(fn_start, segments): #判断这个地址是否可用于指纹
             # signature
             size = min(fn_end - fn_start, signature_size)
             signature = signature_size * [None]
             signature_bytes = ida.get_bytes(fn_start, size)
             n = 0
             maxn = 0
+
             while n < size:
                 # first instruction byte
                 signature[n] = signature_bytes[n]
+                # parameters:
+                # out - the resulting instruction
+                # ea - linear address
+                # returns : the length of the possible instruction or 0
                 instruction_size = ida.decode_insn(instruction, fn_start + n)
                 maxn = n + instruction_size
 
@@ -855,8 +861,8 @@ def fingerprint_functions(segments):
                     if op.type == ida.o_imm:
                         value = abs(op.value)
                         if value > 0:
-                            op_size = math.ceil(int(math.log(value) / log2 + 1) / 8)
-                    op_size = int(min(op_size, instruction_size - op.offb))
+                            op_size = math.ceil(int(math.log(value) / log2 + 1) / 8) #这里是算出这个数字占的字节数
+                    op_size = int(min(op_size, instruction_size - op.offb)) # offb,从指令开始，操作数值的偏移植
                     for o in range(n + op.offb, min(n + op.offb + op_size, signature_size)):
                         signature[o] = signature_bytes[o]
 
@@ -1675,7 +1681,6 @@ def match_unknown(segments, explored, patterns, names, guesses, position_to_ea, 
         progress.finish()
         ida.show_auto(0, ida.AU_NONE)
 
-
 def apply_matches(matched_eas, names, imported_types, explored, position_to_ea):
     """
     Aplies matched items
@@ -1696,6 +1701,7 @@ def apply_matches(matched_eas, names, imported_types, explored, position_to_ea):
 
         # name
         node = names[name]
+        print (hex(ea), name, node['user'])
         if node['user']:
             sn_flags = ida.SN_NOCHECK | ida.SN_FORCE
             if node['public']:
@@ -1706,15 +1712,18 @@ def apply_matches(matched_eas, names, imported_types, explored, position_to_ea):
                 sn_flags |= ida.SN_WEAK
             else:
                 sn_flags |= ida.SN_NON_WEAK
-            ida.set_name(ea, name, sn_flags)
+            state = ida.set_name(ea, name, sn_flags)
+            print (hex(ea), name, 'user, state: ', state, 'flags: ', sn_flags)
 
         # comments, flags
         if node['type'] == 'data':
             for pos, comment in node['cmt'].items():
-                ida.set_cmt(ea + pos, comment, False)
+                state = ida.set_cmt(ea + pos, comment, False)
+                print (hex(ea + pos), name, 'comment', comment, state)
                 applied_comments += 1
             for pos, comment in node['cmt_rep'].items():
-                ida.set_cmt(ea + pos, comment, True)
+                state = ida.set_cmt(ea + pos, comment, True)
+                print (hex(ea + pos), name, 'comment', comment, state)
                 applied_comments += 1
 
             explored.append((ea, ea + node['size']))
@@ -1739,11 +1748,13 @@ def apply_matches(matched_eas, names, imported_types, explored, position_to_ea):
 
             for pos, comments in node['code_cmt'].items():
                 if (name, ea) in position_to_ea:
-                    ida.set_cmt(position_to_ea[(name, ea)][pos], '\n'.join(comments), False)
+                    state = ida.set_cmt(position_to_ea[(name, ea)][pos], '\n'.join(comments), False)
+                    print(hex(position_to_ea[(name, ea)][pos]), name, 'code_cmt', comments, state)
                     applied_comments += 1
             for pos, comments in node['code_cmt_rep'].items():
                 if (name, ea) in position_to_ea:
-                    ida.set_cmt(position_to_ea[(name, ea)][pos], '\n'.join(comments), True)
+                    state = ida.set_cmt(position_to_ea[(name, ea)][pos], '\n'.join(comments), True)
+                    print(hex(position_to_ea[(name, ea)][pos]), name, 'code_cmt', comments, state)
                     applied_comments += 1
 
             explored.append((ea, function.end_ea))
@@ -2138,12 +2149,12 @@ class FingerMatch(ida.plugin_t):
             return ida.PLUGIN_SKIP
 
         action_collect = ida.action_desc_t(
-            'fingerprints_collect',
-            'Collect fingerprints',
-            FingerprintAction(),
+            'fingerprints_collect', # The action name.
+            'Collect fingerprints', # 显示的名字
+            FingerprintAction(),    # The action handler.
             '',
-            'Collect functions, data, types and comments from open db and save them into a file',
-            39)
+            'Collect functions, data, types and comments from open db and save them into a file', #光标移上面显示的注释
+            39) # Optional: the action icon
         action_match = ida.action_desc_t(
             'fingerprints_match',
             'Match fingerprints',
